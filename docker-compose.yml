@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  telegram-image-host:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - MAX_FILE_SIZE=${MAX_FILE_SIZE:-10485760}
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-60}
+      - BIND_ADDRESS=0.0.0.0:3000
+      - RUST_LOG=${RUST_LOG:-info}
+      - TELEGRAM_LOG_CHAT_ID=${TELEGRAM_LOG_CHAT_ID}
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
