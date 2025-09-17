@@ -11,7 +11,6 @@ use axum::{
     Router,
 };
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 use tower::ServiceBuilder;
 use tower_http::{
     cors::CorsLayer,
@@ -53,7 +52,6 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         telegram_service,
         admin_secret: config.admin_secret.clone(),
-        upload_semaphore: Arc::new(Semaphore::new(10)),
     });
 
     // Build router
@@ -87,5 +85,4 @@ pub struct AppState {
     pub config: Config,
     pub telegram_service: Arc<TelegramService>,
     pub admin_secret: String,
-    pub upload_semaphore: Arc<Semaphore>,
 }

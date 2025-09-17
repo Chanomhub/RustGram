@@ -99,14 +99,6 @@ pub async fn upload_image(
         filename.unwrap_or_else(|| "image.bin".to_string())
     );
 
-    // Acquire a semaphore permit before uploading to Telegram
-    let _permit = state
-        .upload_semaphore
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| AppError::TooManyRequests)?;
-
     // Upload to Telegram
     let telegram_message = state
         .telegram_service
