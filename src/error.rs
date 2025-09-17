@@ -1,4 +1,5 @@
 use axum::{
+    extract::multipart::MultipartError,
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -125,5 +126,17 @@ impl From<base64::DecodeError> for AppError {
 impl From<image::ImageError> for AppError {
     fn from(err: image::ImageError) -> Self {
         AppError::InvalidFileFormat(format!("Image processing error: {}", err))
+    }
+}
+
+impl From<MultipartError> for AppError {
+    fn from(err: MultipartError) -> Self {
+        AppError::ValidationError(format!("Multipart error: {}", err))
+    }
+}
+
+impl From<anyhow::Error> for AppError {
+    fn from(err: anyhow::Error) -> Self {
+        AppError::ConfigError(err.to_string())
     }
 }

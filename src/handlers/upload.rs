@@ -1,15 +1,17 @@
 use axum::{
     extract::{Multipart, State, ConnectInfo},
+    http::StatusCode,
     response::Json,
 };
+use std::net::SocketAddr;
 use std::sync::Arc;
 use uuid::Uuid;
-use std::net::SocketAddr;
 
 use crate::{
     crypto::CryptoService,
     error::{AppError, Result},
-    models::{FileReference, UploadResponse},
+    models::QueuedResponse,
+    worker::UploadJob,
     AppState,
 };
 
@@ -17,149 +19,88 @@ pub async fn upload_image(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     mut multipart: Multipart,
-) -> Result<Json<UploadResponse>> {
+) -> Result<(StatusCode, Json<QueuedResponse>)> {
     let mut image_data: Option<Vec<u8>> = None;
     let mut filename: Option<String> = None;
     let mut mime_type: Option<String> = None;
 
     // Process multipart form data
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::ValidationError(format!("Invalid multipart data: {}", e)))?
-    {
-        match field.name() {
-            Some("image") | Some("file") => {
-                // Get content type
-                if let Some(content_type) = field.content_type() {
-                    mime_type = Some(content_type.to_string());
-                }
-
-                // Get filename
-                if let Some(field_filename) = field.file_name() {
-                    filename = Some(field_filename.to_string());
-                }
-
-                // Read file data
-                let data = field
-                    .bytes()
-                    .await
-                    .map_err(|e| AppError::ValidationError(format!("Failed to read file: {}", e)))?;
-
-                image_data = Some(data.to_vec());
-            }
-            _ => {
-                // Skip unknown fields
-                continue;
+    while let Some(field) = multipart.next_field().await? {
+        if let Some(name) = field.name() {
+            if name == "image" || name == "file" {
+                mime_type = field.content_type().map(|s| s.to_string());
+                filename = field.file_name().map(|s| s.to_string());
+                image_data = Some(field.bytes().await?.to_vec());
+                break; // Found the image, no need to process further
             }
         }
     }
 
-    let image_data = image_data.ok_or_else(|| {
-        AppError::ValidationError("No image file found in request".to_string())
-    })?;
+    let image_data = image_data.ok_or_else(|| AppError::ValidationError("No image found".into()))?;
+    let original_size = image_data.len();
 
-    // Validate file size
-    if image_data.len() > state.config.max_file_size {
-        return Err(AppError::FileTooLarge {
-            max_size: state.config.max_file_size,
-        });
+    // --- All validations from here ---
+    if original_size > state.config.max_file_size {
+        return Err(AppError::FileTooLarge { max_size: state.config.max_file_size });
     }
 
-    // Detect MIME type if not provided
-    let detected_mime = mime_guess::from_path(
-        filename.as_deref().unwrap_or("unknown")
-    ).first_or_octet_stream();
-    
-    let final_mime_type = mime_type.unwrap_or_else(|| detected_mime.to_string());
+    let final_mime_type = mime_type.unwrap_or_else(|| {
+        mime_guess::from_path(filename.as_deref().unwrap_or("")).first_or_octet_stream().to_string()
+    });
 
-    // Validate image type
     if !state.config.allowed_image_types.contains(&final_mime_type) {
         return Err(AppError::InvalidFileFormat(format!(
-            "Unsupported image type: {}. Allowed types: {:?}",
+            "Unsupported type: {}. Allowed: {:?}",
             final_mime_type, state.config.allowed_image_types
         )));
     }
 
-    // Validate image data by trying to decode it
-    let _img = image::load_from_memory(&image_data)
-        .map_err(|e| AppError::InvalidFileFormat(format!("Invalid image data: {}", e)))?;
-
-    // Initialize crypto service
-    let encryption_key = state.config.get_encryption_key_bytes()
-        .map_err(|e| AppError::ConfigError(e.to_string()))?;
-    let crypto = CryptoService::new(&encryption_key);
+    if let Err(e) = image::load_from_memory(&image_data) {
+        return Err(AppError::InvalidFileFormat(format!("Invalid image data: {}", e)));
+    }
+    // --- End of validations ---
 
     // Encrypt image data
+    let encryption_key = state.config.get_encryption_key_bytes()?;
+    let crypto = CryptoService::new(&encryption_key);
     let encrypted_data = crypto.encrypt_data(&image_data)?;
 
+    // Generate a unique job ID
+    let job_id = Uuid::new_v4().to_string();
+
     // Generate unique filename for Telegram
-    let unique_filename = format!("{}_{}", 
-        Uuid::new_v4(), 
+    let unique_filename = format!(
+        "{}_{}",
+        Uuid::new_v4(),
         filename.unwrap_or_else(|| "image.bin".to_string())
     );
 
-    // Upload to Telegram
-    let telegram_message = state
-        .telegram_service
-        .upload_file(&encrypted_data, &unique_filename)
-        .await?;
-
-    // Extract file information
-    let file_id = telegram_message
-        .document
-        .as_ref()
-        .map(|doc| doc.file_id.clone())
-        .ok_or_else(|| AppError::TelegramError("No document in response".to_string()))?;
-
-    // Create file reference
-    let file_ref = FileReference::new(
-        file_id,
-        telegram_message.message_id,
-        image_data.len(),
-        final_mime_type.clone(),
-    );
-
-    // Encrypt file reference for URL
-    let encrypted_id = crypto.encrypt_file_reference(&file_ref)?;
-
-    // Create response
-    let response = UploadResponse {
-        id: encrypted_id.clone(),
-        url: format!("/image/{}", encrypted_id),
-        size: image_data.len(),
+    // Create an upload job
+    let job = UploadJob {
+        job_id: job_id.clone(),
+        encrypted_data,
+        unique_filename,
+        original_size,
         mime_type: final_mime_type.clone(),
+        client_ip: addr,
     };
+
+    // Send the job to the worker queue
+    state.upload_queue.send(job).await.map_err(|e| {
+        tracing::error!("Failed to send job to queue: {}", e);
+        AppError::InternalError("Failed to queue upload job".to_string())
+    })?;
 
     tracing::info!(
-        "Image uploaded successfully: {} bytes, type: {}",
-        image_data.len(),
-        final_mime_type
+        "Queued job ID: {} for IP: {}. Size: {}, Type: {}",
+        job_id, addr, original_size, final_mime_type
     );
 
-    state.telegram_service.send_log_message(&format!(
-        "Image uploaded: ID={}, Size={}, Type={}, IP={}",
-        response.id,
-        response.size,
-        response.mime_type,
-        addr
-    )).await?;
-
-    Ok(Json(response))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::{
-        body::Body,
-        http::{Request, header::CONTENT_TYPE},
+    // Respond to the client immediately
+    let response = QueuedResponse {
+        job_id: job_id.clone(),
+        status_url: format!("/job/{}", job_id),
     };
 
-    #[tokio::test]
-    async fn test_upload_validation() {
-        // Test that we properly validate file size and type
-        // This would require setting up a test server
-        // For now, this is a placeholder for future tests
-    }
+    Ok((StatusCode::ACCEPTED, Json(response)))
 }

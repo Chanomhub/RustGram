@@ -5,7 +5,7 @@ pub struct FileReference {
     pub file_id: String,
     pub message_id: i64,
     pub nonce: [u8; 12], // AES-GCM nonce
-    pub file_size: usize,
+    pub size: usize,
     pub mime_type: String,
 }
 
@@ -15,6 +15,22 @@ pub struct UploadResponse {
     pub url: String,
     pub size: usize,
     pub mime_type: String,
+}
+
+// The immediate response when a file is queued for upload
+#[derive(Debug, Serialize)]
+pub struct QueuedResponse {
+    pub job_id: String,
+    pub status_url: String,
+}
+
+// Represents the status of an upload job
+#[derive(Debug, Serialize)]
+#[serde(tag = "status")]
+pub enum JobStatus {
+    Pending,
+    Completed { response: UploadResponse },
+    Failed { error: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -68,7 +84,7 @@ impl FileReference {
     pub fn new(
         file_id: String,
         message_id: i64,
-        file_size: usize,
+        size: usize,
         mime_type: String,
     ) -> Self {
         let mut nonce = [0u8; 12];
@@ -78,7 +94,7 @@ impl FileReference {
             file_id,
             message_id,
             nonce,
-            file_size,
+            size,
             mime_type,
         }
     }

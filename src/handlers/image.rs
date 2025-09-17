@@ -35,7 +35,7 @@ pub async fn get_image(
     let image_data = crypto.decrypt_data(&encrypted_data)?;
 
     // Validate decrypted data size matches expected size
-    if image_data.len() != file_ref.file_size {
+    if image_data.len() != file_ref.size {
         return Err(AppError::InternalError(
             "Decrypted file size mismatch".to_string(),
         ));
@@ -106,7 +106,7 @@ pub async fn get_image_info(
     let file_ref = crypto.decrypt_file_reference(&encrypted_id)?;
 
     let response = serde_json::json!({
-        "size": file_ref.file_size,
+        "size": file_ref.size,
         "mime_type": file_ref.mime_type,
         "id": encrypted_id
     });
@@ -114,7 +114,7 @@ pub async fn get_image_info(
     state.telegram_service.send_log_message(&format!(
         "Image info retrieved: ID={}, Size={}, Type={}, IP={}",
         encrypted_id,
-        file_ref.file_size,
+        file_ref.size,
         file_ref.mime_type,
         addr
     )).await?;

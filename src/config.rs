@@ -14,6 +14,12 @@ pub struct Config {
     pub allowed_image_types: Vec<String>,
     #[serde(default)]
     pub admin_secret: String,
+    #[serde(default = "default_upload_delay")]
+    pub upload_delay_secs: u64,
+}
+
+fn default_upload_delay() -> u64 {
+    2
 }
 
 impl Config {
@@ -46,6 +52,10 @@ impl Config {
                 "image/webp".to_string(),
             ],
             admin_secret: env::var("ADMIN_SECRET").unwrap_or_else(|_| "".to_string()),
+            upload_delay_secs: env::var("UPLOAD_DELAY_SECS")
+                .unwrap_or_else(|_| "2".to_string())
+                .parse()
+                .context("UPLOAD_DELAY_SECS must be a valid integer")?,
         };
 
         // Validate encryption key length
