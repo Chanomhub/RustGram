@@ -43,6 +43,9 @@ pub enum AppError {
 
     #[error("Invalid ID format")]
     InvalidId,
+
+    #[error("Too many requests")]
+    TooManyRequests,
 }
 
 impl IntoResponse for AppError {
@@ -65,6 +68,9 @@ impl IntoResponse for AppError {
             }
             AppError::RateLimitExceeded => {
                 (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded".to_string())
+            }
+            AppError::TooManyRequests => {
+                (StatusCode::TOO_MANY_REQUESTS, "Too many concurrent requests".to_string())
             }
             AppError::NotFound => {
                 (StatusCode::NOT_FOUND, "Image not found".to_string())

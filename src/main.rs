@@ -11,6 +11,7 @@ use axum::{
     Router,
 };
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tower::ServiceBuilder;
 use tower_http::{
     cors::CorsLayer,
@@ -21,7 +22,7 @@ use tracing_subscriber;
 
 use crate::{
     config::Config,
-    handlers::{health, image, upload, admin},
+    handlers::{health, image, upload, admin, url_upload},
     middleware::rate_limit::RateLimitLayer,
     services::telegram::TelegramService,
 };
@@ -52,12 +53,14 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         telegram_service,
         admin_secret: config.admin_secret.clone(),
+        upload_semaphore: Arc::new(Semaphore::new(10)),
     });
 
     // Build router
     let app = Router::new()
         .route("/health", get(health::health_check))
         .route("/upload", post(upload::upload_image))
+        .route("/upload_from_url", post(url_upload::upload_from_url))
         .route("/image/:id", get(image::get_image))
         .route("/info/:id", get(image::get_image_info))
         .route("/admin/image/:id", delete(admin::delete_image))
@@ -84,4 +87,5 @@ pub struct AppState {
     pub config: Config,
     pub telegram_service: Arc<TelegramService>,
     pub admin_secret: String,
+    pub upload_semaphore: Arc<Semaphore>,
 }

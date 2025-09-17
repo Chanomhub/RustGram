@@ -1,10 +1,11 @@
 use axum::{
-    extract::{Multipart, State, ConnectInfo},
+    extract::{State, ConnectInfo},
     response::Json,
 };
 use std::sync::Arc;
 use uuid::Uuid;
 use std::net::SocketAddr;
+use serde::Deserialize;
 
 use crate::{
     crypto::CryptoService,
@@ -13,51 +14,31 @@ use crate::{
     AppState,
 };
 
-pub async fn upload_image(
+#[derive(Deserialize)]
+pub struct UrlUploadPayload {
+    pub url: String,
+}
+
+pub async fn upload_from_url(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    mut multipart: Multipart,
+    Json(payload): Json<UrlUploadPayload>,
 ) -> Result<Json<UploadResponse>> {
-    let mut image_data: Option<Vec<u8>> = None;
-    let mut filename: Option<String> = None;
-    let mut mime_type: Option<String> = None;
+    // Download image from URL
+    let response = reqwest::get(&payload.url).await.map_err(|e| {
+        AppError::ValidationError(format!("Failed to download image from URL: {}", e))
+    })?;
 
-    // Process multipart form data
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::ValidationError(format!("Invalid multipart data: {}", e)))?
-    {
-        match field.name() {
-            Some("image") | Some("file") => {
-                // Get content type
-                if let Some(content_type) = field.content_type() {
-                    mime_type = Some(content_type.to_string());
-                }
-
-                // Get filename
-                if let Some(field_filename) = field.file_name() {
-                    filename = Some(field_filename.to_string());
-                }
-
-                // Read file data
-                let data = field
-                    .bytes()
-                    .await
-                    .map_err(|e| AppError::ValidationError(format!("Failed to read file: {}", e)))?;
-
-                image_data = Some(data.to_vec());
-            }
-            _ => {
-                // Skip unknown fields
-                continue;
-            }
-        }
+    if !response.status().is_success() {
+        return Err(AppError::ValidationError(format!(
+            "Failed to download image: status code {}",
+            response.status()
+        )));
     }
 
-    let image_data = image_data.ok_or_else(|| {
-        AppError::ValidationError("No image file found in request".to_string())
-    })?;
+    let image_data = response.bytes().await.map_err(|e| {
+        AppError::ValidationError(format!("Failed to read image bytes: {}", e))
+    })?.to_vec();
 
     // Validate file size
     if image_data.len() > state.config.max_file_size {
@@ -66,12 +47,12 @@ pub async fn upload_image(
         });
     }
 
-    // Detect MIME type if not provided
-    let detected_mime = mime_guess::from_path(
-        filename.as_deref().unwrap_or("unknown")
-    ).first_or_octet_stream();
-    
-    let final_mime_type = mime_type.unwrap_or_else(|| detected_mime.to_string());
+    // Detect MIME type
+    let mime_type = mime_guess::from_ext(
+        payload.url.split('.').last().unwrap_or(""),
+    )
+    .first_or_octet_stream();
+    let final_mime_type = mime_type.to_string();
 
     // Validate image type
     if !state.config.allowed_image_types.contains(&final_mime_type) {
@@ -94,18 +75,8 @@ pub async fn upload_image(
     let encrypted_data = crypto.encrypt_data(&image_data)?;
 
     // Generate unique filename for Telegram
-    let unique_filename = format!("{}_{}", 
-        Uuid::new_v4(), 
-        filename.unwrap_or_else(|| "image.bin".to_string())
-    );
-
-    // Acquire a semaphore permit before uploading to Telegram
-    let _permit = state
-        .upload_semaphore
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| AppError::TooManyRequests)?;
+    let filename = payload.url.split('/').last().unwrap_or("image.bin").to_string();
+    let unique_filename = format!("{}_{}", Uuid::new_v4(), filename);
 
     // Upload to Telegram
     let telegram_message = state
@@ -140,13 +111,15 @@ pub async fn upload_image(
     };
 
     tracing::info!(
-        "Image uploaded successfully: {} bytes, type: {}",
+        "Image uploaded successfully from URL: {}, size: {} bytes, type: {}",
+        payload.url,
         image_data.len(),
         final_mime_type
     );
 
     state.telegram_service.send_log_message(&format!(
-        "Image uploaded: ID={}, Size={}, Type={}, IP={}",
+        "Image uploaded from URL: URL={}, ID={}, Size={}, Type={}, IP={}",
+        payload.url,
         response.id,
         response.size,
         response.mime_type,
@@ -154,20 +127,4 @@ pub async fn upload_image(
     )).await?;
 
     Ok(Json(response))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::{
-        body::Body,
-        http::{Request, header::CONTENT_TYPE},
-    };
-
-    #[tokio::test]
-    async fn test_upload_validation() {
-        // Test that we properly validate file size and type
-        // This would require setting up a test server
-        // For now, this is a placeholder for future tests
-    }
 }
